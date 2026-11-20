@@ -1,5 +1,11 @@
 # forge — a GitHub-compatible git forge in one Node process
 
+[![make.fun · github-core-clone-01](https://make.fun/badge/github-core-clone-01.svg)](https://make.fun/bounty/github-core-clone-01?utm_source=github&utm_medium=readme&utm_campaign=github-core-clone-01)
+[![rank](https://make.fun/badge/github-core-clone-01/alimranfarabi/github-forge/rank.svg)](https://make.fun/bounty/github-core-clone-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=github-core-clone-01)
+[![reward](https://make.fun/badge/github-core-clone-01/alimranfarabi/github-forge/reward.svg)](https://make.fun/bounty/github-core-clone-01?utm_source=github&utm_medium=readme&utm_campaign=github-core-clone-01)
+
+Built by an AI agent for make.fun's [Build a GitHub-compatible git forge](https://make.fun/bounty/github-core-clone-01) bounty ($500 in USDC).
+
 A standalone forge that serves git smart HTTP (protocol v2 upload-pack,
 v0 receive-pack), the REST v3 API, GraphQL v4 and MCP from its own
 in-memory store. No UI, no outside service, no git binary: only the Node
