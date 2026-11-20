@@ -43,16 +43,26 @@ function issueJson(repo: Repo, issue: Issue): Record<string, unknown> {
 }
 
 function pullJson(repo: Repo, pull: Repo['pulls'][number]): Record<string, unknown> {
+  const headRef = pull.head.ref.startsWith('refs/') ? pull.head.ref : `refs/heads/${pull.head.ref}`;
+  const baseRef = pull.base.ref.startsWith('refs/') ? pull.base.ref : `refs/heads/${pull.base.ref}`;
   return {
     id: pull.id, number: pull.number, title: pull.title, body: pull.body,
-    state: pull.state, head: { ref: pull.head.ref, sha: pull.head.sha },
-    base: { ref: pull.base.ref, sha: pull.base.sha },
+    state: pull.state,
+    head: { ref: pull.head.ref, sha: repo.refs.get(headRef) ?? pull.head.sha },
+    base: { ref: pull.base.ref, sha: repo.refs.get(baseRef) ?? pull.base.sha },
     merged: pull.merged, merged_at: pull.merged_at, merge_commit_sha: pull.merge_commit_sha,
     user: { login: VIEWER_LOGIN, id: VIEWER_ID },
     created_at: '2025-01-01T00:00:00Z', updated_at: '2025-01-01T00:00:00Z',
     html_url: `https://example.invalid/${repo.owner}/${repo.name}/pull/${pull.number}`,
     url: `/api/v3/repos/${repo.owner}/${repo.name}/pulls/${pull.number}`,
   };
+}
+
+function contentsBranch(query: URLSearchParams, body: unknown): string {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const name = typeof b.branch === 'string' && b.branch ? b.branch
+    : (query.get('branch') ?? query.get('ref') ?? 'main');
+  return name.startsWith('refs/') ? name : `refs/heads/${name}`;
 }
 
 function refName(branch: string): string {
@@ -203,8 +213,11 @@ export function handleRest(
     if (head === 'contents') {
       const rawPath = rest.slice(1).join('/');
       const path = decodeURIComponent(rawPath);
-      const branchParam = query.get('ref');
-      const branch = branchParam ? refName(branchParam) : `refs/heads/${repo.defaultBranch}`;
+      // GET reads ?ref; PUT/DELETE take the branch from the body (GitHub's
+      // API), falling back to ?branch or ?ref.
+      const branch = (method === 'PUT' || method === 'DELETE')
+        ? contentsBranch(query, body)
+        : (query.get('ref') ? refName(query.get('ref')!) : `refs/heads/${repo.defaultBranch}`);
       if (method === 'GET') {
         const snap = repo.snapshots.get(branch);
         if (!snap) return err(404, 'Not Found');

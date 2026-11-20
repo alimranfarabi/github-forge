@@ -77,12 +77,15 @@ function resolveWant(store: Store, oid: string): { commit: string | null; tag: s
 }
 
 // Collect the objects to send for a fetch. Returns commits to send, extra tag
-// objects, and the shallow/unshallow boundary lists.
+// objects, the shallow/unshallow boundary lists, and the object ids the
+// client already holds (the full closure of its haves), which must not be
+// re-sent.
 function planFetch(
   store: Store, repo: Repo,
   wants: string[], haves: string[],
   depth: number | null, deepen: number | null,
-): { commits: string[]; tags: string[]; shallow: string[]; unshallow: string[] } {
+  shallowBoundary: readonly string[] = [],
+): { commits: string[]; tags: string[]; shallow: string[]; unshallow: string[]; held: Set<string> } {
   const wantCommits: string[] = [];
   const tags: string[] = [];
   for (const w of wants) {
@@ -153,14 +156,46 @@ function planFetch(
   }
   // Deterministic order: by distance then oid.
   const commits = [...toSend].sort((a, b) => (dist.get(a) ?? 0) - (dist.get(b) ?? 0) || (a < b ? -1 : 1));
-  return { commits, tags, shallow, unshallow };
+  // Everything the client already holds: the object closure of its haves,
+  // stopping at the client's shallow boundary (a shallow clone holds the
+  // boundary commit's tree, but not the boundary's parents).
+  const boundary = new Set(shallowBoundary);
+  const held = new Set<string>();
+  for (const h of haves) {
+    const r = resolveWant(store, h);
+    const start = r.commit ?? (r.tag ?? h);
+    if (r.tag) held.add(r.tag);
+    const queue: string[] = [start];
+    const seenCommits = new Set<string>();
+    while (queue.length) {
+      const c = queue.shift()!;
+      if (seenCommits.has(c)) continue;
+      seenCommits.add(c);
+      held.add(c);
+      const obj = store.getObject(c);
+      if (!obj || obj.type !== 'commit') continue;
+      const walk = (treeOid: string): void => {
+        if (held.has(treeOid)) return;
+        held.add(treeOid);
+        const t = store.getObject(treeOid);
+        if (!t || t.type !== 'tree') return;
+        for (const e of parseTree(t.data)) {
+          if (e.mode === '40000') walk(e.oid);
+          else held.add(e.oid);
+        }
+      };
+      walk(parseCommit(obj.data).tree);
+      if (!boundary.has(c)) queue.push(...parseCommit(obj.data).parents);
+    }
+  }
+  return { commits, tags, shallow, unshallow, held };
 }
 
-function collectPackObjects(store: Store, commits: string[], tags: string[]): GitObject[] {
+function collectPackObjects(store: Store, commits: string[], tags: string[], held: Set<string>): GitObject[] {
   const out: GitObject[] = [];
   const seen = new Set<string>();
   const add = (oid: string): void => {
-    if (seen.has(oid)) return;
+    if (seen.has(oid) || held.has(oid)) return;
     const obj = store.getObject(oid);
     if (!obj) return;
     seen.add(oid);
@@ -184,19 +219,18 @@ function collectPackObjects(store: Store, commits: string[], tags: string[]): Gi
   return out;
 }
 
-function packForFetch(store: Store, commits: string[], tags: string[]): Buffer {
-  return writePack(collectPackObjects(store, commits, tags));
+function packForFetch(store: Store, commits: string[], tags: string[], held: Set<string>): Buffer {
+  return writePack(collectPackObjects(store, commits, tags, held));
 }
 
-function lsRefsResponse(store: Store, repo: Repo, args: string[]): Buffer {
+function lsRefsResponse(store: Store, repo: Repo, argsIn: string[]): Buffer {
+  const args = argsIn.map((a) => a.replace(/\n$/, ''));
   const peel = args.includes('peel');
   const symrefs = args.includes('symrefs');
   const prefixes = args.filter((a) => a.startsWith('ref-prefix ')).map((a) => a.slice('ref-prefix '.length));
   const refs = listRefs(store, repo);
   const lines: Array<string | 'flush'> = [];
-  if (!refs.length) {
-    lines.push('unborn refs/heads/main\n');
-  } else {
+  if (refs.length) {
     for (const r of refs) {
       if (prefixes.length && !prefixes.some((p) => r.name.startsWith(p))) continue;
       let line = `${r.oid} ${r.name}`;
@@ -231,8 +265,8 @@ function parseFetchArgs(lines: string[]): FetchArgs {
 function v2FetchResponse(store: Store, repo: Repo, args: FetchArgs): Buffer {
   // A deepen request (haves present) deepens the shallow boundary; a plain
   // depth request limits the fetch to that many generations from the wants.
-  const plan = planFetch(store, repo, args.wants, args.haves, args.haves.length ? null : args.depth, args.haves.length ? args.depth : null);
-  const pack = packForFetch(store, plan.commits, plan.tags);
+  const plan = planFetch(store, repo, args.wants, args.haves, args.haves.length ? null : args.depth, args.haves.length ? args.depth : null, args.shallow);
+  const pack = packForFetch(store, plan.commits, plan.tags, plan.held);
   const parts: Buffer[] = [];
   const sec = (name: string, lines: string[]): void => {
     if (!lines.length) return;
@@ -267,8 +301,8 @@ function v2FetchResponse(store: Store, repo: Repo, args: FetchArgs): Buffer {
 }
 
 function v0FetchResponse(store: Store, repo: Repo, args: FetchArgs): Buffer {
-  const plan = planFetch(store, repo, args.wants, args.haves, args.haves.length ? null : args.depth, args.haves.length ? args.depth : null);
-  const pack = packForFetch(store, plan.commits, plan.tags);
+  const plan = planFetch(store, repo, args.wants, args.haves, args.haves.length ? null : args.depth, args.haves.length ? args.depth : null, args.shallow);
+  const pack = packForFetch(store, plan.commits, plan.tags, plan.held);
   const parts: Buffer[] = [];
   if (args.haves.length) {
     const ok = args.haves.every((h) => store.isAncestor(h, args.wants[0] ?? h));
